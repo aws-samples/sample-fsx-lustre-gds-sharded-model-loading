@@ -1,0 +1,68 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Stack 2 of 2: FSx for Lustre Persistent_2 EFA filesystem.
+  Deploy after 1-gpu-instance.yaml succeeds. Imports subnet and
+  security group from the GPU stack. Takes ~25 min (FSx creation).
+
+Parameters:
+  GPUStackName:
+    Type: String
+    Default: fsx-lustre-gds-gpu
+    Description: Name of the GPU stack (1-gpu-instance.yaml) to import from.
+
+  FSxStorageCapacityGiB:
+    Type: Number
+    Default: 350400
+    MinValue: 6000
+    Description: >
+      Storage capacity in GiB (multiple of 6000). 96000 for testing,
+      350400 (~342 TiB) for max GDS throughput (~190 GiB/s read).
+
+  FSxPerUnitThroughput:
+    Type: Number
+    Default: 1000
+    AllowedValues: [125, 250, 500, 1000]
+    Description: Throughput per TiB in MBps. Use 1000 for max GDS performance.
+
+Resources:
+  FSxLustreFilesystem:
+    Type: AWS::FSx::FileSystem
+    Properties:
+      FileSystemType: LUSTRE
+      StorageCapacity: !Ref FSxStorageCapacityGiB
+      StorageType: SSD
+      SubnetIds:
+        - !ImportValue
+            Fn::Sub: '${GPUStackName}-SubnetId'
+      SecurityGroupIds:
+        - !ImportValue
+            Fn::Sub: '${GPUStackName}-SecurityGroupId'
+      LustreConfiguration:
+        DeploymentType: PERSISTENT_2
+        PerUnitStorageThroughput: !Ref FSxPerUnitThroughput
+        EfaEnabled: true
+        DataCompressionType: NONE
+        MetadataConfiguration:
+          Mode: AUTOMATIC
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-fsxl'
+
+Outputs:
+  FSxFilesystemId:
+    Description: FSx for Lustre Filesystem ID
+    Value: !Ref FSxLustreFilesystem
+
+  FSxFilesystemDNS:
+    Description: FSx for Lustre DNS name (use with mount command)
+    Value: !Sub '${FSxLustreFilesystem}.fsx.${AWS::Region}.amazonaws.com'
+
+  SetupInstructions:
+    Description: Next steps
+    Value: >
+      1. SSH into the GPU instance.
+      2. Copy scripts/ to the instance.
+      3. Run 1-setup-gds.sh then reboot.
+      4. Run 2-configure-lustre-client.sh.
+      5. Run 3-mount-and-tune.sh.
+      6. Optionally run benchmark-gds.sh.

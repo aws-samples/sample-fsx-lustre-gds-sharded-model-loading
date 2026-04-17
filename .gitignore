@@ -1,0 +1,33 @@
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor files
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+.venv/
+venv/
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.bak
+
+# Superseded CloudFormation templates
+cloudformation/1-infrastructure.yaml
+cloudformation/2-gpu-instance.yaml
+cloudformation/fsx-lustre-gds-infrastructure.yaml
