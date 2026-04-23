@@ -4,6 +4,9 @@
 #
 # setup-gds.sh — Install EFA driver and build NVIDIA GPUDirect Storage kernel module
 #
+# The nvidia-fs.ko module is installed into the kernel module tree and configured
+# to load automatically on boot via /etc/modules-load.d, so it survives reboots.
+#
 # Prerequisites:
 #   - NVIDIA drivers and CUDA must be installed (use a Deep Learning AMI)
 #   - Run as root or with sudo
@@ -27,6 +30,9 @@ echo ""
 echo "NVIDIA driver detected:"
 nvidia-smi --query-gpu=driver_version,name --format=csv,noheader | head -1 || true
 echo ""
+
+KERNEL_VER=$(uname -r)
+MODULE_DIR="/lib/modules/${KERNEL_VER}/extra"
 
 # -----------------------------------------------------------
 # 1. Install EFA driver
@@ -52,29 +58,47 @@ echo ">>> Building GPUDirect Storage kernel module..."
 sudo rmmod nvidia_fs 2>/dev/null || true
 
 # Clone NVIDIA GDS kernel module source
-cd /tmp
-if [ -d "gds-nvidia-fs" ]; then
-    rm -rf gds-nvidia-fs
-fi
-sudo git clone https://github.com/NVIDIA/gds-nvidia-fs.git
-cd gds-nvidia-fs/src
+BUILD_DIR=$(mktemp -d)
+git clone https://github.com/NVIDIA/gds-nvidia-fs.git "${BUILD_DIR}/gds-nvidia-fs"
+cd "${BUILD_DIR}/gds-nvidia-fs/src"
 
-# Configure for P5/P5e/P5en instances (large PCI topology)
+# Configure for P5/P5e/P5en/P6e instances (large PCI topology)
 export NVFS_MAX_PEER_DEVS=128
 export NVFS_MAX_PCI_DEPTH=16
 
 # Build the module
 make
 
+# Install into kernel module tree so it survives reboots
+sudo mkdir -p "${MODULE_DIR}"
+sudo cp nvidia-fs.ko "${MODULE_DIR}/nvidia-fs.ko"
+sudo depmod -a
+
+# Clean up build directory
+rm -rf "${BUILD_DIR}"
+
 # Load the module
-sudo insmod nvidia-fs.ko
+sudo modprobe nvidia_fs
 
 echo ""
-echo ">>> GDS kernel module built and loaded."
+echo ">>> GDS kernel module built and installed to ${MODULE_DIR}"
 echo ""
 
 # -----------------------------------------------------------
-# 3. Verify GDS is active
+# 3. Configure nvidia_fs to load on boot
+# -----------------------------------------------------------
+echo ">>> Configuring nvidia_fs to load on boot..."
+echo "nvidia_fs" | sudo tee /etc/modules-load.d/nvidia-fs.conf > /dev/null
+
+# Set build options so they apply on modprobe too
+echo "options nvidia_fs nvfs_max_peer_devs=128 nvfs_max_pci_depth=16" \
+    | sudo tee /etc/modprobe.d/nvidia-fs.conf > /dev/null
+
+echo ">>> Auto-load configured."
+echo ""
+
+# -----------------------------------------------------------
+# 4. Verify GDS is active
 # -----------------------------------------------------------
 echo ">>> Verifying GDS installation..."
 echo ""
@@ -97,7 +121,7 @@ else
 fi
 
 # -----------------------------------------------------------
-# 4. Create GDS configuration file
+# 5. Create GDS configuration file
 # -----------------------------------------------------------
 echo ""
 echo ">>> Creating GDS configuration (/etc/cufile.json)..."
@@ -146,7 +170,8 @@ echo " GDS setup complete."
 echo ""
 echo " *** REBOOT REQUIRED ***"
 echo " The EFA driver needs a reboot to activate"
-echo " all 32 EFA interfaces. Run:"
+echo " all EFA interfaces. After reboot, nvidia_fs"
+echo " will load automatically. Run:"
 echo ""
 echo "   sudo reboot"
 echo ""
