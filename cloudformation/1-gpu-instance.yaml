@@ -23,6 +23,7 @@ Metadata:
           - RootVolumeSize
           - UseSpotInstance
           - SpotMaxPrice
+          - CapacityReservationId
 
 Parameters:
   VpcCidr:
@@ -76,8 +77,17 @@ Parameters:
     Type: String
     Default: '98.00'
 
+  CapacityReservationId:
+    Type: String
+    Default: ''
+    Description: >
+      EC2 Capacity Reservation ID (e.g. cr-074ee967975d85130). When provided,
+      the instance targets this specific reservation. Leave empty for
+      on-demand or spot launches.
+
 Conditions:
   UseSpot: !Equals [!Ref UseSpotInstance, 'true']
+  UseCapacityReservation: !Not [!Equals [!Ref CapacityReservationId, '']]
   Use32EFA: !Equals [!Ref InstanceType, 'p6e.48xlarge']
   Use16EFA: !Not [!Equals [!Ref InstanceType, 'p6e.48xlarge']]
 
@@ -255,6 +265,13 @@ Resources:
                 SpotInstanceType: one-time
                 MaxPrice: !Ref SpotMaxPrice
             - !Ref 'AWS::NoValue'
+        CapacityReservationSpecification:
+          !If
+            - UseCapacityReservation
+            - CapacityReservationPreference: capacity-reservations-only
+              CapacityReservationTarget:
+                CapacityReservationId: !Ref CapacityReservationId
+            - !Ref 'AWS::NoValue'
         BlockDeviceMappings:
           - DeviceName: /dev/xvda
             Ebs:
@@ -388,6 +405,13 @@ Resources:
               SpotOptions:
                 SpotInstanceType: one-time
                 MaxPrice: !Ref SpotMaxPrice
+            - !Ref 'AWS::NoValue'
+        CapacityReservationSpecification:
+          !If
+            - UseCapacityReservation
+            - CapacityReservationPreference: capacity-reservations-only
+              CapacityReservationTarget:
+                CapacityReservationId: !Ref CapacityReservationId
             - !Ref 'AWS::NoValue'
         BlockDeviceMappings:
           - DeviceName: /dev/xvda
