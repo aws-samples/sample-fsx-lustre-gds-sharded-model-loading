@@ -12,18 +12,26 @@
 #   - CUDA toolkit installed (for gdsio tool)
 #   - Run as root or with sudo
 #
-# Usage: sudo ./benchmark-gds.sh [threads_per_gpu]
-#   threads_per_gpu — threads per GPU job (default: 32)
+# Usage: sudo ./benchmark-gds.sh [threads_per_gpu] [block_size]
+#   threads_per_gpu — threads per GPU job (default: 8)
+#   block_size      — I/O block size (default: 16MB)
+#
+# The defaults (8 threads × 16MB) were tuned on p5en.48xlarge + FSx Persistent_2
+# EFA (96 TiB, 20 OSTs, 1000 MBps/TiB) and deliver ~94 GiB/s read with ~10 ms
+# avg latency — close to the theoretical filesystem maximum. Smaller block
+# sizes underutilize parallelism (bs=1MB → ~17 GiB/s); larger block sizes
+# (bs=64MB) match peak throughput but drive latency into the 100+ ms range.
 
 set -euo pipefail
 
-THREADS=${1:-32}
+THREADS=${1:-8}
+BLOCK_SIZE=${2:-16MB}
 MOUNT=${MOUNT:-/fsx}
 NUM_GPUS=$(nvidia-smi -L | wc -l)
 
 echo "============================================"
 echo " GDS Performance Benchmark"
-echo " GPUs: ${NUM_GPUS}, Threads per GPU: ${THREADS}"
+echo " GPUs: ${NUM_GPUS}, Threads per GPU: ${THREADS}, Block size: ${BLOCK_SIZE}"
 echo " Mount: ${MOUNT}"
 echo "============================================"
 echo ""
@@ -66,12 +74,15 @@ echo ""
 
 # -----------------------------------------------------------
 # Create benchmark directories with Lustre striping
+# Stripe size should match (or be a divisor of) the I/O block size
+# so each request fits cleanly into OST chunks; 16M stripe pairs
+# with the default 16MB I/O block size.
 # -----------------------------------------------------------
-echo ">>> Creating benchmark directories..."
+echo ">>> Creating benchmark directories (stripe: all OSTs, 16M)..."
 for (( i=0; i<NUM_GPUS; i++ )); do
     dir="${MOUNT}/gds_benchmark/gpu${i}"
     mkdir -p "$dir"
-    lfs setstripe -S 1M -c -1 "$dir"
+    lfs setstripe -S 16M -c -1 "$dir"
 done
 
 # -----------------------------------------------------------
@@ -83,7 +94,7 @@ for test in write read; do
 [global]
 name=gds_${test}
 xfer_type=0
-bs=1MB
+bs=${BLOCK_SIZE}
 size=20G
 runtime=60
 do_verify=0
@@ -108,11 +119,11 @@ ulimit -n 100000
 # -----------------------------------------------------------
 # Run benchmarks
 # -----------------------------------------------------------
-echo ">>> WRITE benchmark (${NUM_GPUS} GPUs × ${THREADS} threads, 60s)..."
+echo ">>> WRITE benchmark (${NUM_GPUS} GPUs × ${THREADS} threads × ${BLOCK_SIZE}, 60s)..."
 ${GDSIO} /tmp/write_benchmark.gdsio
 echo ""
 
-echo ">>> READ benchmark (${NUM_GPUS} GPUs × ${THREADS} threads, 60s)..."
+echo ">>> READ benchmark (${NUM_GPUS} GPUs × ${THREADS} threads × ${BLOCK_SIZE}, 60s)..."
 ${GDSIO} /tmp/read_benchmark.gdsio
 echo ""
 
