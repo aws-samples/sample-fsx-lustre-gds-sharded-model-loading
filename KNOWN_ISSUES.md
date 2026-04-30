@@ -18,21 +18,53 @@ aws cloudformation create-stack --stack-name fsx-lustre-gds-gpu \
                  ParameterKey=AmiId,ParameterValue=<AMI> \
     --region us-west-2
 
-# 2. After the stack creates networking but fails on the instance,
-#    launch via CLI with the capacity block market type:
-aws ec2 run-instances --region us-west-2 \
+# 2. Get the subnet and security group from the (partially failed) stack:
+SUBNET=$(aws cloudformation describe-stacks --stack-name fsx-lustre-gds-gpu \
+  --query 'Stacks[0].Outputs[?OutputKey==`SubnetId`].OutputValue' --output text --region us-west-2)
+SG=$(aws cloudformation describe-stacks --stack-name fsx-lustre-gds-gpu \
+  --query 'Stacks[0].Outputs[?OutputKey==`SecurityGroupId`].OutputValue' --output text --region us-west-2)
+
+# 3. Build the 16-EFA network interfaces JSON:
+python3 -c "
+import json
+enis = [{'DeviceIndex':0,'NetworkCardIndex':0,'InterfaceType':'efa',
+         'SubnetId':'$SUBNET','Groups':['$SG'],'DeleteOnTermination':True}]
+for i in range(1, 16):
+    enis.append({'DeviceIndex':1,'NetworkCardIndex':i,'InterfaceType':'efa-only',
+                 'SubnetId':'$SUBNET','Groups':['$SG'],'DeleteOnTermination':True})
+json.dump(enis, open('/tmp/enis.json','w'), indent=2)
+print(f'Wrote {len(enis)} interfaces to /tmp/enis.json')
+"
+
+# 4. Launch the instance with capacity block market type:
+INSTANCE_ID=$(aws ec2 run-instances --region us-west-2 \
   --image-id <AMI> --instance-type p5en.48xlarge --key-name my-key \
-  --iam-instance-profile Name=<stack-name>-instance-role \
+  --iam-instance-profile Name=fsx-lustre-gds-gpu-instance-role \
   --instance-market-options 'MarketType=capacity-block' \
   --capacity-reservation-specification \
     "CapacityReservationTarget={CapacityReservationId=cr-XXXX}" \
   --network-interfaces file:///tmp/enis.json \
-  --block-device-mappings '[{"DeviceName":"/dev/sda1","Ebs":{"VolumeSize":500,"VolumeType":"gp3"}}]'
+  --block-device-mappings '[{"DeviceName":"/dev/sda1","Ebs":{"VolumeSize":500,"VolumeType":"gp3"}}]' \
+  --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=fsx-gds-p5en}]' \
+  --query 'Instances[0].InstanceId' --output text)
+echo "Instance: $INSTANCE_ID"
+
+# 5. Allocate and associate an Elastic IP (required — can't use
+#    AssociatePublicIpAddress with multiple network interfaces):
+PRIMARY_ENI=$(aws ec2 describe-instances --region us-west-2 \
+  --instance-ids $INSTANCE_ID \
+  --query 'Reservations[0].Instances[0].NetworkInterfaces[?Attachment.DeviceIndex==`0`].NetworkInterfaceId | [0]' \
+  --output text)
+ALLOC_ID=$(aws ec2 allocate-address --region us-west-2 --domain vpc --query 'AllocationId' --output text)
+aws ec2 associate-address --region us-west-2 --allocation-id $ALLOC_ID --network-interface-id $PRIMARY_ENI
+PUBLIC_IP=$(aws ec2 describe-addresses --region us-west-2 --allocation-ids $ALLOC_ID --query 'Addresses[0].PublicIp' --output text)
+echo "SSH: ssh -i my-key.pem ubuntu@$PUBLIC_IP"
 ```
 
-You must build the `enis.json` file with 16 EFA interfaces referencing the
-subnet and security group created by the CFT. See the project context or
-README for the full Python snippet.
+**Important:** The instance launched this way is NOT managed by CloudFormation.
+You must terminate it manually (`aws ec2 terminate-instances`) and release the
+EIP (`aws ec2 release-address`) when done. The FSx stack and GPU stack
+networking can still be deleted via `aws cloudformation delete-stack`.
 
 ## cufile.json Pinned Memory
 
