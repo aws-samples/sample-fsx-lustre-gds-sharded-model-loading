@@ -1,28 +1,26 @@
 # Accelerate LLM Model Loading with GPUDirect Storage on Amazon FSx for Lustre
 
 This repository contains the infrastructure and setup scripts for the AWS blog post:
-**[Accelerate LLM Model Loading with GPU Direct on Amazon FSx for Lustre](TODO: insert blog URL)**
+**[Accelerate LLM Model Loading and Increase Context Windows with GPU Direct on Amazon FSx for Lustre and Advanced Turbo Quantization](TODO: insert blog URL)**
 
-Load large language models (LLMs) like Llama 3.1 405B in under 10 seconds instead of 20+ minutes by combining Amazon FSx for Lustre, NVIDIA GPUDirect Storage (GDS), and pre-sharded tensor-parallel checkpoints.
+Load Llama 3.1 405B model weights to 8 GPUs in 6 seconds instead of nearly 3 minutes — a **25x speedup** — by combining Amazon FSx for Lustre, NVIDIA GPUDirect Storage (GDS), and pre-sharded tensor-parallel checkpoints.
 
 ## Overview
 
-Traditional LLM model loading is single-threaded and CPU-bound — reading weights from storage, deserializing, optionally quantizing on the CPU, and copying to each GPU sequentially over PCIe. For an 800 GB model, this takes ~20 minutes.
+Traditional LLM model loading is single-threaded and CPU-bound — reading weights from storage, deserializing, optionally quantizing, and copying to each GPU sequentially over PCIe.
 
 This solution eliminates every bottleneck by:
 
 1. **Pre-sharding and pre-quantizing** the model offline into per-GPU tensor-parallel shards
-2. **Reading all shards in parallel** via GDS directly from FSx for Lustre into GPU HBM, bypassing CPU memory entirely
+2. **Reading all shards in parallel** via GDS directly from FSx for Lustre into GPU HBM using [fastsafetensors](https://github.com/IBM/fastsafetensors), bypassing CPU memory entirely
 3. **Serving immediately** — each GPU has exactly the weights it needs, no all-gather required
-
-The result is a ~120x speedup in model load time on P5en and P6e instances.
 
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────┐
 │                  FSx for Lustre (EFA)                   │
-│         Persistent_2 | 1000 MBps/TiB | 24 OSTs         │
+│         Persistent_2 | 1000 MBps/TiB | 20 OSTs         │
 │                                                         │
 │  shard-0.safetensors  shard-1.safetensors  ...  shard-7 │
 └──────┬──────────────────┬─────────────────────────┬─────┘
@@ -36,34 +34,45 @@ The result is a ~120x speedup in model load time on P5en and P6e instances.
               P5en / P6e Instance
 ```
 
-## Prerequisites
+## Measured Performance
 
-- An AWS account with permissions to create VPCs, EC2 instances, FSx filesystems, and IAM roles
-- An [Amazon EC2 key pair](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-key-pairs.html) for SSH access
-- A [Deep Learning AMI](https://docs.aws.amazon.com/dlami/latest/devguide/what-is-dlami.html) (Ubuntu 22.04/24.04 or Amazon Linux 2023) with NVIDIA drivers and CUDA pre-installed
-- Familiarity with Linux command line and AWS services
+Tested on P5en (p5en.48xlarge, 8x H200) with 96 TiB FSx for Lustre Persistent_2 EFA (20 OSTs, ~78 GiB/s GDS read throughput).
 
-## Supported Configurations
+### Llama 3.1 405B Instruct (8-way TP, cold cache)
 
-| Component | Supported Options |
-|---|---|
-| Instance types | p5.48xlarge, p5e.48xlarge, p5en.48xlarge |
-| Operating systems | Amazon Linux 2023 (kernel 6.1+), Ubuntu 22.04/24.04 (kernel 6.8+) |
-| FSx for Lustre | Persistent_2 SSD with EFA enabled |
-| Networking | Instance and FSx filesystem must be in the same VPC and Availability Zone |
+| Loading Method | Total Load Time | Speedup |
+|---|---|---|
+| Standard vLLM from HF checkpoint (BF16→FP8 quantize at load) | **162.4 s** (2.7 min) | 1x |
+| vLLM sharded_state from BF16 shards (no GDS) | **111.0 s** (1.8 min) | 1.5x |
+| **GDS parallel load — BF16 shards (812 GB)** | **10.4 s** | **16x** |
+| **GDS parallel load — FP8 shards (408 GB)** | **6.4 s** | **25x** |
+
+### Llama 3.1 70B Instruct (8-way TP, cold cache)
+
+| Loading Method | Total Load Time | Speedup |
+|---|---|---|
+| Standard vLLM from HF checkpoint (BF16→FP8 quantize at load) | **66.1 s** | 1x |
+| vLLM sharded_state from BF16 shards (no GDS) | **50.5 s** | 1.3x |
+| **GDS parallel load — BF16 shards (141 GB)** | **2.17 s** | **30x** |
+| **GDS parallel load — FP8 shards (72 GB)** | **1.28 s** | **52x** |
+
+GDS load times use [fastsafetensors](https://github.com/IBM/fastsafetensors) for direct storage-to-GPU transfer with tensor reconstruction. Throughput scales linearly with filesystem size.
 
 ## Repository Structure
 
 ```
 ├── cloudformation/
-│   └── fsx-lustre-gds-infrastructure.yaml   # VPC, SG, FSx, GPU instance
+│   ├── 1-gpu-instance.yaml          # Stack 1: VPC, SG, IAM, GPU instance (deploy first)
+│   └── 2-fsx-filesystem.yaml        # Stack 2: FSx Persistent_2 EFA (deploy after GPU stack)
 ├── scripts/
-│   ├── 1-setup-gds.sh                       # EFA driver + GDS kernel module (reboot after)
-│   ├── 2-configure-lustre-client.sh         # NUMA-aware Lustre networking (post-reboot)
-│   ├── 3-mount-and-tune.sh                  # Mount FSx + performance tuning
-│   └── benchmark-gds.sh                     # GDSIO performance validation
+│   ├── 1-setup-gds.sh               # Build nvidia-fs.ko GDS module → REBOOT REQUIRED
+│   ├── 2-configure-lustre-client.sh  # Official AWS EFA setup (--optimized-for-gds)
+│   ├── 3-mount-and-tune.sh          # Mount FSx, Lustre tuning, striping
+│   └── benchmark-gds.sh             # GDSIO benchmark (8 threads × 16MB per GPU)
 ├── model-loading/
-│   └── load-sharded-model.py                # vLLM sharded model load example
+│   ├── load-sharded-model.py        # vLLM sharded load example
+│   ├── quantize_shards_fp8.py       # Offline FP8 quantizer (2D weights only)
+│   └── ...                          # GDS loading utilities
 ├── CODE_OF_CONDUCT.md
 ├── CONTRIBUTING.md
 ├── LICENSE
@@ -72,159 +81,77 @@ The result is a ~120x speedup in model load time on P5en and P6e instances.
 
 ## Deployment
 
-### Step 1: Deploy Infrastructure
-
-Deploy the CloudFormation stack to create the VPC, security group, FSx for Lustre filesystem, and GPU instance:
+### Step 1: Deploy Infrastructure (two-stack approach)
 
 ```bash
-# Find the latest Deep Learning AMI in your region
-AMI_ID=$(aws ec2 describe-images --owners amazon \
-  --filters "Name=name,Values=Deep Learning Base OSS Nvidia Driver GPU AMI (Ubuntu 24.04)*" \
-            "Name=state,Values=available" \
-  --query "sort_by(Images, &CreationDate)[-1].ImageId" --output text)
-echo "Using AMI: $AMI_ID"
+# Deploy GPU stack first (VPC, SG, IAM, instance)
+aws cloudformation create-stack --stack-name fsx-lustre-gds-gpu \
+    --template-body file://cloudformation/1-gpu-instance.yaml \
+    --capabilities CAPABILITY_IAM \
+    --parameters ParameterKey=KeyPairName,ParameterValue=my-key-pair \
+                 ParameterKey=AvailabilityZone,ParameterValue=us-west-2d \
+                 ParameterKey=AmiId,ParameterValue=<DLAMI-ID> \
+    --region us-west-2
 
-# Find an AZ with P5en capacity in your region
-aws ec2 describe-instance-type-offerings \
-  --filters Name=instance-type,Values=p5en.48xlarge \
-  --location-type availability-zone \
-  --query 'InstanceTypeOfferings[].Location' --output text
-```
-
-Then deploy the stack, substituting your values:
-
-```bash
-aws cloudformation create-stack \
-  --stack-name fsx-lustre-gds \
-  --template-body file://cloudformation/fsx-lustre-gds-infrastructure.yaml \
-  --capabilities CAPABILITY_NAMED_IAM \
-  --parameters \
-    ParameterKey=AvailabilityZone,ParameterValue=us-east-1d \
-    ParameterKey=AmiId,ParameterValue=$AMI_ID \
-    ParameterKey=KeyPairName,ParameterValue=my-key-pair \
-    ParameterKey=SSHCidrBlock,ParameterValue=203.0.113.0/32
-```
-
-Wait for the stack to complete (~25-30 minutes, primarily FSx filesystem creation):
-
-```bash
-aws cloudformation wait stack-create-complete --stack-name fsx-lustre-gds
+# Deploy FSx stack (imports subnet/SG from GPU stack)
+aws cloudformation create-stack --stack-name fsx-lustre-gds-fsx \
+    --template-body file://cloudformation/2-fsx-filesystem.yaml \
+    --parameters ParameterKey=GPUStackName,ParameterValue=fsx-lustre-gds-gpu \
+    --region us-west-2
 ```
 
 ### Step 2: Configure the Instance
 
-SSH into the GPU instance and copy the scripts:
-
 ```bash
-# Get the instance IP from stack outputs
-INSTANCE_ID=$(aws cloudformation describe-stacks --stack-name fsx-lustre-gds \
-  --query 'Stacks[0].Outputs[?OutputKey==`InstanceId`].OutputValue' --output text)
-
-INSTANCE_IP=$(aws ec2 describe-instances --instance-ids $INSTANCE_ID \
-  --query 'Reservations[0].Instances[0].PublicIpAddress' --output text)
-
-# Copy scripts to the instance
-scp -i my-key-pair.pem -r scripts/ model-loading/ ubuntu@${INSTANCE_IP}:~/
-
-# SSH in
-ssh -i my-key-pair.pem ubuntu@${INSTANCE_IP}
-```
-
-Run the setup scripts in order:
-
-```bash
-# 1. Install EFA driver and build GDS kernel module
+# 1. Build and install GDS module (survives reboot)
 sudo bash scripts/1-setup-gds.sh
-
-# 2. REBOOT — required for EFA interfaces to activate
 sudo reboot
-```
 
-After the instance comes back up (~1-2 minutes), SSH back in and continue:
-
-```bash
-# 3. Configure NUMA-aware Lustre client networking
+# 2. Configure EFA for Lustre (uses official AWS script)
 sudo bash scripts/2-configure-lustre-client.sh
 
-# 4. Mount FSx for Lustre and apply performance tuning
-#    (auto-detects FSx details from CloudFormation if /etc/fsx-config.env exists)
-sudo bash scripts/3-mount-and-tune.sh
+# 3. Mount FSx and tune
+sudo bash scripts/3-mount-and-tune.sh <fsx-dns> <mount-name>
 ```
 
-### Step 3: Validate GDS Performance (Optional)
-
-Run the GDSIO benchmark to confirm GDS is delivering expected throughput:
+### Step 3: Validate GDS (Optional)
 
 ```bash
-sudo bash scripts/benchmark-gds.sh 32 32
+sudo bash scripts/benchmark-gds.sh
+# Expected on P5en with 96 TiB: ~78-94 GiB/s read
 ```
 
-Expected results on P5en: ~190 GiB/s read, ~158 GiB/s write.
-
-### Step 4: Pre-shard Your Model
-
-Pre-shard and pre-quantize the model (one-time offline step):
+### Step 4: Pre-shard and Load
 
 ```bash
-# Download or copy your model to FSx
-# Example: Llama 3.1 405B in FP16 (~800 GB)
+# Create striped output directory
+mkdir -p /fsx/model_shards/Llama-3.1-405B-BF16-8way
+lfs setstripe -c -1 -S 16M /fsx/model_shards/Llama-3.1-405B-BF16-8way
 
-# Create output directory with optimal striping
-sudo mkdir -p /fsx/model_shards/Llama-3.1-405B-FP8-8way
-sudo lfs setstripe -c -1 -S 64M /fsx/model_shards/Llama-3.1-405B-FP8-8way
+# Shard with vLLM (TP=8)
+python save_sharded_state.py --model /fsx/models/Llama-3.1-405B-Instruct \
+  --output /fsx/model_shards/Llama-3.1-405B-BF16-8way --tensor-parallel-size 8
 
-# Pre-shard with vLLM (adjust tensor-parallel-size for your GPU count)
-python -m vllm.utils.save_sharded_state \
-  --model /fsx/models/Llama-3.1-405B \
-  --quantization fp8 \
-  --tensor-parallel-size 8 \
-  --output /fsx/model_shards/Llama-3.1-405B-FP8-8way
+# Serve with vLLM
+vllm serve /fsx/model_shards/Llama-3.1-405B-BF16-8way \
+  --load-format sharded_state --tensor-parallel-size 8
 ```
-
-### Step 5: Load and Serve
-
-```bash
-# Load the model and verify
-python model-loading/load-sharded-model.py \
-  --model-path /fsx/model_shards/Llama-3.1-405B-FP8-8way \
-  --tensor-parallel-size 8 \
-  --quantization fp8
-
-# Serve for production inference
-vllm serve /fsx/model_shards/Llama-3.1-405B-FP8-8way \
-  --load-format sharded_state \
-  --quantization fp8 \
-  --tensor-parallel-size 8
-```
-
-## Performance
-
-| Loading Method | Total Load Time | Speedup |
-|---|---|---|
-| Single-threaded vLLM (FP16→FP8 quantize at load) | ~20 min | 1x |
-| Single-threaded vLLM (pre-quantized, no GDS) | ~5 min | ~4x |
-| **FSx for Lustre GDS sharded parallel load** | **< 10 s** | **~120x** |
-
-Measured on P5en (p5en.48xlarge) with FSx for Lustre Persistent_2 EFA at 1000 MBps/TiB, 24 OSTs.
 
 ## Cleanup
 
-Delete the CloudFormation stack to remove all resources:
-
 ```bash
-aws cloudformation delete-stack --stack-name fsx-lustre-gds
+aws cloudformation delete-stack --stack-name fsx-lustre-gds-fsx --region us-west-2
+aws cloudformation delete-stack --stack-name fsx-lustre-gds-gpu --region us-west-2
 ```
-
-**Note:** The FSx for Lustre filesystem and all data on it will be deleted. Back up any data you want to keep before deleting the stack.
 
 ## Related Resources
 
 - [Amazon FSx for Lustre](https://aws.amazon.com/fsx/lustre/)
 - [Configuring EFA clients for FSx for Lustre](https://docs.aws.amazon.com/fsx/latest/LustreGuide/configure-efa-clients.html)
+- [Build and deploy a 1 TB/s file system in under an hour](https://aws.amazon.com/blogs/hpc/build-and-deploy-a-1-tb-s-file-system-in-under-an-hour/)
 - [NVIDIA GPUDirect Storage documentation](https://docs.nvidia.com/gpudirect-storage/release-notes/index.html)
 - [Amazon EC2 P5en instances](https://aws.amazon.com/ec2/instance-types/p5/)
-- [Amazon EC2 P6e instances](https://aws.amazon.com/ec2/instance-types/p6/)
-- [vLLM documentation](https://docs.vllm.ai/)
+- [fastsafetensors](https://github.com/IBM/fastsafetensors) — GDS-enabled safetensors loader
 
 ## Security
 
