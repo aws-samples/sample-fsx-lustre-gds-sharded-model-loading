@@ -126,7 +126,7 @@ sudo tee /etc/cufile.json > /dev/null << 'CUFILEEOF'
   "properties": {
     "max_direct_io_size_kb": 16384,
     "max_device_cache_size_kb": 131072,
-    "max_device_pinned_mem_size_kb": 33554432,
+    "max_device_pinned_mem_size_kb": 536870912,
     "use_poll_mode": false,
     "poll_mode_max_size_kb": 4,
     "allow_compat_mode": false,

@@ -99,8 +99,8 @@ echo ">>> Creating model shards directory with optimal Lustre striping..."
 sudo mkdir -p "${MOUNT_POINT}/model_shards"
 sudo chown "$(logname 2>/dev/null || echo $SUDO_USER):$(id -gn "$(logname 2>/dev/null || echo $SUDO_USER)")" "${MOUNT_POINT}/model_shards"
 
-# Stripe across all OSTs with 64 MB stripe size for large sequential reads
-sudo lfs setstripe -c -1 -S 64M "${MOUNT_POINT}/model_shards"
+# Stripe across all OSTs with 16 MB stripe size (matches optimal GDS block size)
+sudo lfs setstripe -c -1 -S 16M "${MOUNT_POINT}/model_shards"
 
 echo ">>> Striping configuration:"
 lfs getstripe "${MOUNT_POINT}/model_shards"
