@@ -70,18 +70,99 @@ GDS load times use [fastsafetensors](https://github.com/IBM/fastsafetensors) for
 │   ├── 3-mount-and-tune.sh          # Mount FSx, Lustre tuning, striping
 │   └── benchmark-gds.sh             # GDSIO benchmark (8 threads × 16MB per GPU)
 ├── model-loading/
-│   ├── load-sharded-model.py        # vLLM sharded load example
+│   ├── gds_load_shards.py           # fastsafetensors GDS parallel loader (main example)
+│   ├── save_sharded_state.py        # vLLM TP-aware sharding script
 │   ├── quantize_shards_fp8.py       # Offline FP8 quantizer (2D weights only)
-│   └── ...                          # GDS loading utilities
+│   ├── benchmark_load.py            # vLLM baseline load timer
+│   └── load-sharded-model.py        # vLLM sharded serve example
 ├── CODE_OF_CONDUCT.md
 ├── CONTRIBUTING.md
 ├── LICENSE
 └── README.md
 ```
 
+## Infrastructure and Setup
+
+This section describes what each component does and how they fit together.
+
+> **💡 Tip:** We recommend using [Kiro CLI](https://kiro.dev) (`kiro-cli chat`) to deploy the
+> CloudFormation stacks and run the setup scripts. Kiro can read the templates and scripts,
+> execute them on your behalf, and assist with troubleshooting if any errors are encountered
+> during deployment — such as capacity issues, security group misconfigurations, or module
+> build failures.
+
+### CloudFormation Templates
+
+The infrastructure is split into two stacks so you can secure scarce GPU capacity first, then
+create the FSx filesystem (which takes ~25 minutes) without blocking on instance availability.
+
+**`1-gpu-instance.yaml`** (deploy first) creates:
+- VPC with a /16 CIDR (required for FSx EFA)
+- Public subnet in your chosen AZ
+- Security group with self-referencing all-traffic rules (required for FSx EFA validation) plus scoped SSH
+- IAM role and instance profile with FSx and S3 access
+- Launch Template with all EFA interfaces (16 for P5en, 32 for P6e — auto-detected via conditions)
+- GPU instance (on-demand or spot)
+
+**`2-fsx-filesystem.yaml`** (deploy second) creates:
+- FSx for Lustre Persistent_2 filesystem with `EfaEnabled: true`
+- Imports the subnet and security group from the GPU stack via CloudFormation exports
+- Parameterized capacity (default 96 TiB) and throughput (default 1000 MBps/TiB)
+
+> **⚠️ Capacity Block Reservations are NOT supported by CloudFormation.**
+>
+> P5en and P6e instances are extremely scarce. [EC2 Capacity Blocks](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/capacity-blocks-using.html)
+> are often the only reliable way to get GPU capacity. However, Capacity Blocks require
+> `MarketType=capacity-block` in `InstanceMarketOptions`, which CloudFormation does not
+> support as of May 2026.
+>
+> **If using a Capacity Block:** Deploy the GPU stack with `--disable-rollback` to create
+> the networking resources (the instance creation will fail — that's expected). Then launch
+> the instance via the AWS CLI as shown in [Option B](#option-b-cli-launch-with-capacity-block-reservation) below.
+>
+> **If using on-demand or spot:** The CloudFormation template works end-to-end.
+
+### Setup Scripts
+
+The scripts are numbered and must be run in order on the GPU instance. There is a **mandatory reboot** between scripts 1 and 2.
+
+| Script | What it does | Why |
+|---|---|---|
+| `1-setup-gds.sh` | Builds and installs `nvidia-fs.ko` (GDS kernel module) from source, writes `/etc/cufile.json`, configures module to auto-load on boot | The DLAMI doesn't ship with GDS pre-installed. The module enables direct DMA from EFA to GPU HBM. **Reboot required** after this script for the module to load cleanly. |
+| `2-configure-lustre-client.sh` | Downloads and runs the official AWS `configure-efa-fsx-lustre-client` setup script with `--optimized-for-gds` | Configures LNet to use EFA interfaces with NUMA-aware CPU partitioning, creates a systemd service for reboot persistence. Must run **after** reboot so nvidia-fs is loaded first. |
+| `3-mount-and-tune.sh` | Mounts the FSx filesystem, applies Lustre client tuning (max_rpcs_in_flight, max_cached_mb), creates model_shards directory with 16M stripe across all OSTs | Tuning parameters and stripe size are matched to the optimal GDS block size (16 MB). |
+| `benchmark-gds.sh` | Runs GDSIO with 8 threads × 16 MB per GPU across all 8 GPUs for 60 seconds | Validates GDS is working end-to-end. Expected: ~78–94 GiB/s read on 96 TiB. If you see < 20 GiB/s, EFA routing or module load order is wrong. |
+
+### Model Loading Scripts
+
+| Script | Purpose |
+|---|---|
+| `gds_load_shards.py` | **Main example.** Parallel GDS load using fastsafetensors — reads safetensors shards directly into GPU HBM and reconstructs tensors. This is what produces the 6.4s / 25x speedup numbers. |
+| `save_sharded_state.py` | Shards a HuggingFace model into per-GPU tensor-parallel safetensors files using vLLM. |
+| `quantize_shards_fp8.py` | Offline FP8 quantizer — converts BF16 shards to FP8 (2D weight tensors only, preserves norms in BF16). |
+| `benchmark_load.py` | Measures vLLM baseline load time (no GDS) for comparison. |
+| `load-sharded-model.py` | Example of serving pre-sharded weights with vLLM's `--load-format sharded_state`. |
+
 ## Deployment
 
 ### Step 1: Deploy Infrastructure (two-stack approach)
+
+> **⚠️ Important: Capacity Block Reservations are NOT supported by CloudFormation.**
+>
+> P5en and P6e instances are scarce. If you are using an [EC2 Capacity Block reservation](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/capacity-blocks-using.html)
+> (the most reliable way to get GPU capacity), you **cannot** launch the instance via
+> CloudFormation. Capacity Blocks require `MarketType=capacity-block` in the
+> `InstanceMarketOptions`, which is not supported by `AWS::EC2::Instance` or Launch Templates
+> in CloudFormation as of May 2026.
+>
+> **If using a Capacity Block:** Deploy the GPU CloudFormation stack with `--disable-rollback`
+> to create the networking (VPC, subnet, security group, IAM role) — the instance will fail
+> but the networking resources will persist. Then launch the instance separately via the
+> AWS CLI `run-instances` command as shown in Option B below.
+>
+> **If using on-demand or spot:** The CloudFormation template works as-is (Option A).
+
+#### Option A: CloudFormation (on-demand or spot only)
 
 ```bash
 # Deploy GPU stack first (VPC, SG, IAM, instance)
@@ -94,6 +175,64 @@ aws cloudformation create-stack --stack-name fsx-lustre-gds-gpu \
     --region us-west-2
 
 # Deploy FSx stack (imports subnet/SG from GPU stack)
+aws cloudformation create-stack --stack-name fsx-lustre-gds-fsx \
+    --template-body file://cloudformation/2-fsx-filesystem.yaml \
+    --parameters ParameterKey=GPUStackName,ParameterValue=fsx-lustre-gds-gpu \
+    --region us-west-2
+```
+
+#### Option B: CLI launch with Capacity Block reservation
+
+Use this when you have a Capacity Block reservation. First deploy the GPU stack with
+`--disable-rollback` to create networking, then launch the instance via CLI:
+
+```bash
+# 1. Deploy GPU stack for networking only (instance will fail — that's expected)
+aws cloudformation create-stack --stack-name fsx-lustre-gds-gpu \
+    --template-body file://cloudformation/1-gpu-instance.yaml \
+    --capabilities CAPABILITY_IAM --disable-rollback \
+    --parameters ParameterKey=KeyPairName,ParameterValue=my-key-pair \
+                 ParameterKey=AvailabilityZone,ParameterValue=us-west-2d \
+                 ParameterKey=AmiId,ParameterValue=<DLAMI-ID> \
+    --region us-west-2
+
+# 2. Get the subnet and security group from the stack outputs
+SUBNET=$(aws cloudformation describe-stacks --stack-name fsx-lustre-gds-gpu \
+    --query 'Stacks[0].Outputs[?OutputKey==`SubnetId`].OutputValue' --output text --region us-west-2)
+SG=$(aws cloudformation describe-stacks --stack-name fsx-lustre-gds-gpu \
+    --query 'Stacks[0].Outputs[?OutputKey==`SecurityGroupId`].OutputValue' --output text --region us-west-2)
+IAM_PROFILE=$(aws cloudformation describe-stacks --stack-name fsx-lustre-gds-gpu \
+    --query 'Stacks[0].Outputs[?OutputKey==`InstanceProfileName`].OutputValue' --output text --region us-west-2)
+
+# 3. Build 16-interface EFA network config (P5en; use 32 for P6e)
+python3 -c "
+import json
+enis = [{'DeviceIndex':0,'NetworkCardIndex':0,'InterfaceType':'efa',
+         'SubnetId':'$SUBNET','Groups':['$SG'],'DeleteOnTermination':True}]
+for i in range(1, 16):
+    enis.append({'DeviceIndex':1,'NetworkCardIndex':i,'InterfaceType':'efa-only',
+                 'SubnetId':'$SUBNET','Groups':['$SG'],'DeleteOnTermination':True})
+json.dump(enis, open('/tmp/enis.json','w'), indent=2)
+"
+
+# 4. Launch with capacity-block market type
+aws ec2 run-instances --region us-west-2 \
+    --image-id <DLAMI-ID> --instance-type p5en.48xlarge --key-name my-key-pair \
+    --iam-instance-profile Name=$IAM_PROFILE \
+    --instance-market-options 'MarketType=capacity-block' \
+    --capacity-reservation-specification "CapacityReservationTarget={CapacityReservationId=cr-XXXXXXXXXXXXXXXXX}" \
+    --network-interfaces file:///tmp/enis.json \
+    --block-device-mappings '[{"DeviceName":"/dev/sda1","Ebs":{"VolumeSize":500,"VolumeType":"gp3","DeleteOnTermination":true}}]' \
+    --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=fsx-gds-blog-p5en}]'
+
+# 5. Allocate and associate an Elastic IP (multi-ENI instances don't auto-assign public IPs)
+INSTANCE_ID=<from step 4>
+PRIMARY_ENI=$(aws ec2 describe-instances --region us-west-2 --instance-ids $INSTANCE_ID \
+    --query 'Reservations[0].Instances[0].NetworkInterfaces[?Attachment.DeviceIndex==`0`].NetworkInterfaceId | [0]' --output text)
+ALLOC=$(aws ec2 allocate-address --region us-west-2 --domain vpc --query 'AllocationId' --output text)
+aws ec2 associate-address --region us-west-2 --allocation-id $ALLOC --network-interface-id $PRIMARY_ENI
+
+# 6. Deploy FSx stack
 aws cloudformation create-stack --stack-name fsx-lustre-gds-fsx \
     --template-body file://cloudformation/2-fsx-filesystem.yaml \
     --parameters ParameterKey=GPUStackName,ParameterValue=fsx-lustre-gds-gpu \
