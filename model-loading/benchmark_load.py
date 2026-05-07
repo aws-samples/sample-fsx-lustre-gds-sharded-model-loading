@@ -26,7 +26,7 @@ def main():
     print(f"Model loaded in {t1 - t0:.2f} seconds ({(t1-t0)/60:.1f} minutes)")
 
     output = llm.generate(["Hello"], SamplingParams(max_tokens=10))
-    print(f"Sanity check: {output[0].outputs[0].text}")
+    print(f"Validity check: {output[0].outputs[0].text}")
 
 if __name__ == "__main__":
     main()

@@ -5,10 +5,10 @@
 # benchmark-gds.sh — Validate GDS performance with NVIDIA GDSIO benchmark
 #
 # Runs one job per GPU with NUMA-aligned threads to verify GDS throughput
-# from FSx for Lustre directly to GPU memory.
+# from Amazon FSx for Lustre directly to GPU memory.
 #
 # Prerequisites:
-#   - GDS configured and FSx mounted (run previous scripts first)
+#   - GDS configured and Amazon FSx for Lustre mounted (run previous scripts first)
 #   - CUDA toolkit installed (for gdsio tool)
 #   - Run as root or with sudo
 #
@@ -16,8 +16,8 @@
 #   threads_per_gpu — threads per GPU job (default: 8)
 #   block_size      — I/O block size (default: 16MB)
 #
-# The defaults (8 threads × 16MB) were tuned on p5en.48xlarge + FSx Persistent_2
-# EFA (96 TiB, 20 OSTs, 1000 MBps/TiB) and deliver ~94 GiB/s read with ~10 ms
+# The defaults (8 threads × 16MB) were tuned on p5en.48xlarge + Amazon FSx for Lustre Persistent_2
+# Elastic Fabric Adapter (EFA) (96 TiB, 20 OSTs, 1000 MBps/TiB) and deliver ~94 GiB/s read with ~10 ms
 # avg latency — close to the theoretical filesystem maximum. Smaller block
 # sizes underutilize parallelism (bs=1MB → ~17 GiB/s); larger block sizes
 # (bs=64MB) match peak throughput but drive latency into the 100+ ms range.

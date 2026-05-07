@@ -2,11 +2,11 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 #
-# mount-and-tune.sh — Mount FSx for Lustre and apply performance tuning
+# mount-and-tune.sh — Mount Amazon FSx for Lustre and apply performance tuning
 #
 # Prerequisites:
 #   - Lustre client configured (run 2-configure-lustre-client.sh first)
-#   - FSx filesystem must be in AVAILABLE state
+#   - Amazon FSx for Lustre filesystem must be in AVAILABLE state
 #   - Run as root or with sudo
 #
 # Usage: sudo ./mount-and-tune.sh <fsx-dns-name> <mount-name>
@@ -14,27 +14,27 @@
 # Example:
 #   sudo ./mount-and-tune.sh fs-0123456789abcdef0.fsx.us-east-1.amazonaws.com abcd1234
 #
-# If /etc/fsx-config.env exists (created by CloudFormation UserData), the script
+# If /etc/fsx-config.env exists (created by AWS CloudFormation UserData), the script
 # will attempt to auto-detect the DNS name and mount name.
 
 set -euo pipefail
 
 echo "============================================"
-echo " FSx for Lustre GDS Setup"
+echo " Amazon FSx for Lustre GDS Setup"
 echo " Step 3: Mount and Tune"
 echo "============================================"
 
 MOUNT_POINT="/fsx"
 
 # -----------------------------------------------------------
-# Determine FSx DNS name and mount name
+# Determine Amazon FSx for Lustre DNS name and mount name
 # -----------------------------------------------------------
 if [[ $# -ge 2 ]]; then
     FSX_DNS="$1"
     MOUNT_NAME="$2"
 elif [[ -f /etc/fsx-config.env ]]; then
     source /etc/fsx-config.env
-    echo ">>> Auto-detecting FSx filesystem details..."
+    echo ">>> Auto-detecting Amazon FSx for Lustre filesystem details..."
 
     # Query the filesystem for DNS name and mount name
     FS_INFO=$(aws fsx describe-file-systems \
@@ -45,7 +45,7 @@ elif [[ -f /etc/fsx-config.env ]]; then
 
     LIFECYCLE=$(echo "$FS_INFO" | python3 -c "import sys,json; print(json.load(sys.stdin)['Lifecycle'])")
     if [[ "$LIFECYCLE" != "AVAILABLE" ]]; then
-        echo "ERROR: FSx filesystem ${FSX_FILESYSTEM_ID} is in state '${LIFECYCLE}'. Wait until AVAILABLE."
+        echo "ERROR: Amazon FSx for Lustre filesystem ${FSX_FILESYSTEM_ID} is in state '${LIFECYCLE}'. Wait until AVAILABLE."
         echo "Check status: aws fsx describe-file-systems --file-system-ids ${FSX_FILESYSTEM_ID} --query 'FileSystems[0].Lifecycle'"
         exit 1
     fi
@@ -71,7 +71,7 @@ echo ""
 # -----------------------------------------------------------
 # Mount the filesystem
 # -----------------------------------------------------------
-echo ">>> Mounting FSx for Lustre at ${MOUNT_POINT}..."
+echo ">>> Mounting Amazon FSx for Lustre at ${MOUNT_POINT}..."
 sudo mkdir -p "${MOUNT_POINT}"
 sudo mount -t lustre -o relatime,flock "${FSX_DNS}@tcp:/${MOUNT_NAME}" "${MOUNT_POINT}"
 
@@ -107,7 +107,7 @@ lfs getstripe "${MOUNT_POINT}/model_shards"
 
 echo ""
 echo "============================================"
-echo " FSx for Lustre mounted and tuned."
+echo " Amazon FSx for Lustre mounted and tuned."
 echo " Mount point: ${MOUNT_POINT}"
 echo " Model shards directory: ${MOUNT_POINT}/model_shards/"
 echo ""

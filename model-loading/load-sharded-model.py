@@ -10,8 +10,8 @@
 #   3. Runs a quick inference test to verify the model works
 #
 # Prerequisites:
-#   - GDS configured and FSx mounted (run the setup scripts first)
-#   - Pre-sharded model on FSx (run pre-shard step below first)
+#   - GDS configured and Amazon FSx for Lustre mounted (run the setup scripts first)
+#   - Pre-sharded model on Amazon FSx for Lustre (run pre-shard step below first)
 #   - vLLM installed: pip install vllm
 #
 # Pre-shard your model (one-time offline step):
@@ -97,13 +97,13 @@ def verify_model(llm):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Load a pre-sharded LLM via GDS from FSx for Lustre"
+        description="Load a pre-sharded LLM via GDS from Amazon FSx for Lustre"
     )
     parser.add_argument(
         "--model-path",
         type=str,
         required=True,
-        help="Path to pre-sharded model on FSx (e.g. /fsx/model_shards/Llama-3.1-405B-FP8-8way)",
+        help="Path to pre-sharded model on Amazon FSx for Lustre (e.g. /fsx/model_shards/Llama-3.1-405B-FP8-8way)",
     )
     parser.add_argument(
         "--tensor-parallel-size",

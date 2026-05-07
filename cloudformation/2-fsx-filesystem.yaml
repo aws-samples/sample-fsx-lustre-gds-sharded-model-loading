@@ -1,8 +1,8 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >
-  Stack 2 of 2: FSx for Lustre Persistent_2 EFA filesystem.
+  Stack 2 of 2: Amazon FSx for Lustre Persistent_2 Elastic Fabric Adapter (EFA) filesystem.
   Deploy after 1-gpu-instance.yaml succeeds. Imports subnet and
-  security group from the GPU stack. Takes ~25 min (FSx creation).
+  security group from the GPU stack. Takes ~25 min (Amazon FSx for Lustre creation).
 
 Parameters:
   GPUStackName:
@@ -50,19 +50,24 @@ Resources:
 
 Outputs:
   FSxFilesystemId:
-    Description: FSx for Lustre Filesystem ID
+    Description: Amazon FSx for Lustre Filesystem ID
     Value: !Ref FSxLustreFilesystem
 
   FSxFilesystemDNS:
-    Description: FSx for Lustre DNS name (use with mount command)
+    Description: Amazon FSx for Lustre DNS name (use with mount command)
     Value: !Sub '${FSxLustreFilesystem}.fsx.${AWS::Region}.amazonaws.com'
+
+  FSxMountName:
+    Description: Amazon FSx for Lustre mount name (use with mount command)
+    Value: !GetAtt FSxLustreFilesystem.LustreMountName
 
   SetupInstructions:
     Description: Next steps
     Value: >
       1. SSH into the GPU instance.
       2. Copy scripts/ to the instance.
-      3. Run 1-setup-gds.sh then reboot.
-      4. Run 2-configure-lustre-client.sh.
-      5. Run 3-mount-and-tune.sh.
-      6. Optionally run benchmark-gds.sh.
+      3. Run 1-setup-gds.sh.
+      4. Reboot the instance.
+      5. Run 2-configure-lustre-client.sh.
+      6. Run 3-mount-and-tune.sh.
+      7. Optionally run benchmark-gds.sh.

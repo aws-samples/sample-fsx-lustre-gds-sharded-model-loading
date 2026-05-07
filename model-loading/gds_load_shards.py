@@ -10,7 +10,7 @@
 # Prerequisites:
 #   pip install fastsafetensors
 #   nvidia-fs kernel module loaded (run 1-setup-gds.sh)
-#   FSx for Lustre mounted with EFA (run scripts 2 and 3)
+#   Amazon FSx for Lustre mounted with EFA (run scripts 2 and 3)
 #
 # Usage:
 #   python gds_load_shards.py /fsx/model_shards/Llama-3.1-405B-BF16-8way
@@ -18,6 +18,7 @@
 
 import argparse
 import os
+import subprocess
 import time
 import torch
 import torch.multiprocessing as mp
@@ -77,7 +78,7 @@ def main():
     print(f"Total size: {total_gb:.1f} GB across {args.num_gpus} GPUs\n")
 
     if args.drop_cache:
-        os.system("sudo sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches'")
+        subprocess.run(["sudo", "sh", "-c", "sync; echo 3 > /proc/sys/vm/drop_caches"], check=True)
 
     # Parallel load
     mp.set_start_method("spawn", force=True)

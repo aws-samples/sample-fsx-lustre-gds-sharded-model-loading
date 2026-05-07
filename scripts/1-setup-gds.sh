@@ -8,8 +8,8 @@
 # and configures it to load automatically on boot.
 #
 # Prerequisites:
-#   - NVIDIA drivers and CUDA must be installed (use a Deep Learning AMI)
-#   - EFA driver must be installed (Deep Learning AMI includes it, or run
+#   - NVIDIA drivers and CUDA must be installed (use an AWS Deep Learning AMIs (DLAMI) image)
+#   - Elastic Fabric Adapter (EFA) driver must be installed (AWS DLAMI includes it, or run
 #     the AWS install-fsx-lustre-client.sh --install-efa script)
 #   - Run as root or with sudo
 #
@@ -21,13 +21,13 @@
 set -euo pipefail
 
 echo "============================================"
-echo " FSx for Lustre GDS Setup"
+echo " Amazon FSx for Lustre GDS Setup"
 echo " Step 1: GPUDirect Storage Module"
 echo "============================================"
 
 # Verify NVIDIA drivers are installed
 if ! command -v nvidia-smi &> /dev/null; then
-    echo "ERROR: nvidia-smi not found. Install NVIDIA drivers first (use a Deep Learning AMI)."
+    echo "ERROR: nvidia-smi not found. Install NVIDIA drivers first (use an AWS DLAMI)."
     exit 1
 fi
 

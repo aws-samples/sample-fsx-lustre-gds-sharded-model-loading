@@ -2,14 +2,14 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 #
-# configure-lustre-client.sh — Configure EFA for the Lustre client using the
+# configure-lustre-client.sh — Configure Elastic Fabric Adapter (EFA) for the Lustre client using the
 # official AWS setup script, optimized for GPUDirect Storage.
 #
 # This downloads and runs the AWS-provided configure-efa-fsx-lustre-client
 # script, which:
 #   - Detects instance type and NUMA topology
 #   - Loads Lustre and EFA kernel modules with optimal CPU partitioning
-#   - Configures the correct subset of EFA interfaces for FSx for Lustre
+#   - Configures the correct subset of EFA interfaces for Amazon FSx for Lustre
 #   - Sets EFA as the preferred Lustre network transport
 #   - Creates a systemd service for automatic configuration on reboot
 #
@@ -22,7 +22,7 @@
 set -euo pipefail
 
 echo "============================================"
-echo " FSx for Lustre GDS Setup"
+echo " Amazon FSx for Lustre GDS Setup"
 echo " Step 2: EFA Lustre Client Configuration"
 echo "============================================"
 echo ""
