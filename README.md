@@ -420,6 +420,10 @@ To get started, deploy the CloudFormation templates in this repository and follo
 - [Amazon EC2 P5en instances](https://aws.amazon.com/ec2/instance-types/p5/)
 - [fastsafetensors](https://github.com/foundation-model-stack/fastsafetensors) — GDS-enabled safetensors loader
 
+## Important
+
+This is sample code, for non-production usage. You should work with your security and legal teams to meet your organizational security, regulatory and compliance requirements before deployment.
+
 ## Security
 
 See [CONTRIBUTING](CONTRIBUTING.md#security-issue-notifications) for more information.
