@@ -2,7 +2,7 @@
 
 This repository contains the infrastructure and setup scripts that accompany the AWS blog post **"Accelerate LLM Loading and Increase Context Windows with GPUDirect on Amazon FSx for Lustre and Advanced Turbo Quantization"**. The link to the published post will be added here once it is live.
 
-Load Llama 3.1 405B model weights to 8 GPUs in approximately 6 seconds instead of nearly 3 minutes — up to a **25x speedup** in our testing — by combining Amazon FSx for Lustre, NVIDIA GPUDirect Storage (GDS), and pre-sharded tensor-parallel checkpoints.
+Load Llama 3.1 405B model weights to 8 GPUs in approximately 6 seconds instead of nearly 18 minutes — up to a **169x speedup** in our testing — by combining Amazon FSx for Lustre, NVIDIA GPUDirect Storage (GDS), and pre-sharded tensor-parallel checkpoints.
 
 ## Introduction
 
@@ -39,27 +39,23 @@ Tested on P5en (p5en.48xlarge, 8x H200) with 96 TiB Amazon FSx for Lustre Persis
 
 ### Llama 3.1 405B Instruct (8-way TP, cold cache)
 
-The following table lists measured load times for the 405B model across the three paths we compared: a standard vLLM load from the Hugging Face checkpoint, vLLM's sharded-state path (no GDS), and the GDS parallel load path using fastsafetensors.
-
 | **Loading Method** | **Total Load Time** | **Speedup** |
 |:---|:---|:---|
-| Standard vLLM from HF checkpoint (BF16→FP8 quantize at load) | **162.4 s** (2.7 min) | 1x |
-| vLLM sharded_state from BF16 shards (no GDS) | **111.0 s** (1.8 min) | 1.5x |
-| **GDS parallel load — BF16 shards (812 GB)** | **10.4 s** | **16x** |
-| **GDS parallel load — FP8 shards (408 GB)** | **6.4 s** | **25x** |
+| Standard vLLM load (BF16 checkpoint, FP8 quantize-at-load, no GDS) | **~18 min** | 1x |
+| **GDS parallel load — BF16 shards (812 GB)** | **10.4 s** | **~104x** |
+| **GDS parallel load — FP8 shards (408 GB)** | **6.4 s** | **~169x** |
 
 ### Llama 3.1 70B Instruct (8-way TP, cold cache)
 
-The following table lists measured load times for the 70B model across the same three paths.
-
 | **Loading Method** | **Total Load Time** | **Speedup** |
 |:---|:---|:---|
-| Standard vLLM from HF checkpoint (BF16→FP8 quantize at load) | **66.1 s** | 1x |
-| vLLM sharded_state from BF16 shards (no GDS) | **50.5 s** | 1.3x |
-| **GDS parallel load — BF16 shards (141 GB)** | **2.17 s** | **30x** |
-| **GDS parallel load — FP8 shards (72 GB)** | **1.28 s** | **52x** |
+| Standard vLLM load (BF16 checkpoint, FP8 quantize-at-load, no GDS) | **~3 min** | 1x |
+| **GDS parallel load — BF16 shards (141 GB)** | **2.17 s** | **~83x** |
+| **GDS parallel load — FP8 shards (72 GB)** | **1.28 s** | **~141x** |
 
 GDS load times use [fastsafetensors](https://github.com/foundation-model-stack/fastsafetensors) for direct storage-to-GPU transfer with tensor reconstruction. Throughput generally scales with filesystem size in our testing.
+
+> **Note:** The baseline "Standard vLLM load" times were measured with the older vLLM weight loader (pre-V1 engine). The [vLLM V1 engine](https://blog.vllm.ai/2025/01/27/v1-alpha-release.html) (default since vLLM 0.19) introduced parallel weight loading that significantly reduces standard load times. The GDS speedup vs. the current vLLM loader will be lower, but GDS still eliminates the CPU bounce-buffer bottleneck entirely.
 
 ## Repository Structure
 
@@ -148,7 +144,7 @@ The following table lists the Python helpers that drive the sharded load and bas
 
 | **Script** | **Purpose** |
 |:---|:---|
-| `gds_load_shards.py` | **Main example.** Parallel GDS load using fastsafetensors — reads safetensors shards directly into GPU HBM and reconstructs tensors. This is what produces the 6.4s / 25x speedup numbers. |
+| `gds_load_shards.py` | **Main example.** Parallel GDS load using fastsafetensors — reads safetensors shards directly into GPU HBM and reconstructs tensors. This is what produces the 6.4s / 169x speedup numbers. |
 | `save_sharded_state.py` | Shards a HuggingFace model into per-GPU tensor-parallel safetensors files using vLLM. |
 | `quantize_shards_fp8.py` | Offline FP8 quantizer — converts BF16 shards to FP8 (2D weight tensors only, preserves norms in BF16). |
 | `benchmark_load.py` | Measures vLLM baseline load time (no GDS) for comparison. |
@@ -405,7 +401,7 @@ aws cloudformation delete-stack --stack-name fsx-lustre-gds-gpu --region us-west
 
 ## Conclusion
 
-This solution demonstrates how combining Amazon FSx for Lustre with NVIDIA GPUDirect Storage can accelerate LLM model loading by up to 25x in our testing — reducing Llama 3.1 405B load times from nearly 3 minutes to 6 seconds on a 96 TiB filesystem. By pre-sharding models and loading directly to GPU memory in parallel via [fastsafetensors](https://github.com/foundation-model-stack/fastsafetensors), you can reduce CPU bottlenecks and help achieve faster iteration during development and lower cold-start latency in production.
+This solution demonstrates how combining Amazon FSx for Lustre with NVIDIA GPUDirect Storage can accelerate LLM model loading by up to 169x in our testing — reducing Llama 3.1 405B load times from nearly 18 minutes to 6 seconds on a 96 TiB filesystem. By pre-sharding models and loading directly to GPU memory in parallel via [fastsafetensors](https://github.com/foundation-model-stack/fastsafetensors), you can reduce CPU bottlenecks and help achieve faster iteration during development and lower cold-start latency in production.
 
 Throughput generally scales with filesystem size in our testing — a larger filesystem can deliver proportionally faster loads.
 
